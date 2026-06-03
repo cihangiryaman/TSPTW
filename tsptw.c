@@ -50,6 +50,11 @@ static inline int dist(int a, int b) {
     return (int)(sqrt((double)(dx * dx + dy * dy)) + 0.5);
 }
 
+static inline long long dist2(int a, int b) {
+    long long dx = cx[a]-cx[b], dy = cy[a]-cy[b];
+    return dx*dx + dy*dy;
+}
+
 /* ===== Spatial Grid ===== */
 static int gdim, cw, ch, gox, goy;
 static int *gl, *gs, *gc_grid; /* list, start, count */
@@ -213,12 +218,13 @@ static void greedy(int start, int mode) {
         if (gx0 >= gdim) gx0 = gdim - 1; if (gx0 < 0) gx0 = 0;
         if (gy0 >= gdim) gy0 = gdim - 1; if (gy0 < 0) gy0 = 0;
 
-        int best = -1, bscore = INF;
+        int best = -1;
+        long long bscore = 0x7FFFFFFFFFFFFFFFLL;
         for (int r = 0; r <= gdim; r++) {
             /* Early termination: lower bound on distance for ring r */
             if (r >= 2 && best >= 0) {
                 int lb = (r - 1) * mcell;
-                if (mode == 0 && lb > bscore) break;
+                if (mode == 0 && (long long)lb * lb > bscore) break;
                 if (mode == 1 && ct + lb > bscore) break;
                 if (mode == 2 && lb + ct + lb > bscore) break;
             }
@@ -233,15 +239,22 @@ static void greedy(int start, int mode) {
                     for (int j = gs[cell]; j < gs[cell] + gc_grid[cell]; j++) {
                         int c = gl[j];
                         if (U[c]) continue;
-                        int d = dist(last, c);
-                        int arr = ct + d;
-                        int ev = arr > co[c] ? arr : co[c];
-                        if (ev > cc[c]) continue;
-                        int score;
-                        switch (mode) {
-                            case 0: score = d; break;
-                            case 1: score = ev; break;
-                            default: score = d + ev; break;
+                        
+                        long long score;
+                        if (mode == 0) {
+                            score = dist2(last, c);
+                            if (score >= bscore) continue;
+                            int d = dist(last, c);
+                            int arr = ct + d;
+                            int ev = arr > co[c] ? arr : co[c];
+                            if (ev > cc[c]) continue;
+                        } else {
+                            int d = dist(last, c);
+                            int arr = ct + d;
+                            int ev = arr > co[c] ? arr : co[c];
+                            if (ev > cc[c]) continue;
+                            if (mode == 1) score = ev;
+                            else score = d + ev;
                         }
                         if (score < bscore) { bscore = score; best = c; }
                     }
@@ -266,19 +279,21 @@ static int ins_pass(void) {
     int inserted = 0;
     for (int c = 0; c < n && !tup(); c++) {
         if (U[c]) continue;
-        int bpos = -1, bcost = INF;
+        int bpos = -1;
+        long long bcost = 0x7FFFFFFFFFFFFFFFLL;
         for (int j = 1; j <= K; j++) {
             int prev = T[j-1];
             int next = (j < K) ? T[j] : T[0];
-            int d1 = dist(prev, c), d2 = dist(c, next), d3 = dist(prev, next);
-            int cost = d1 + d2 - d3;
+            long long cost = dist2(prev, c) + dist2(c, next) - dist2(prev, next);
             if (cost >= bcost) continue;
 
             /* TW feasibility check */
+            int d1 = dist(prev, c);
             int arr = E[j-1] + d1;
             int ev = arr > co[c] ? arr : co[c];
             if (ev > cc[c]) continue;
 
+            int d2 = dist(c, next);
             if (j < K) {
                 int arr2 = ev + d2;
                 int ev2 = arr2 > co[next] ? arr2 : co[next];
@@ -321,7 +336,7 @@ static int two_opt_pass(void) {
         for (int j = i + 1; j <= jlim; j++) {
             int a = T[i-1], b = T[i], c2 = T[j];
             int d = (j + 1 < K) ? T[j+1] : T[0];
-            int delta = dist(a, c2) + dist(b, d) - dist(a, b) - dist(c2, d);
+            long long delta = dist2(a, c2) + dist2(b, d) - dist2(a, b) - dist2(c2, d);
             if (delta >= 0) continue;
 
             /* Reverse segment [i..j] */
@@ -330,7 +345,8 @@ static int two_opt_pass(void) {
             }
             /* Check TW feasibility from position i */
             if (recomp(T, K, E, i)) {
-                TL += delta;
+                int actual_delta = dist(a, c2) + dist(b, d) - dist(a, b) - dist(c2, d);
+                TL += actual_delta;
                 TC = E[K-1] + dist(T[K-1], T[0]);
                 improved = 1;
             } else {
@@ -353,12 +369,13 @@ static int swap_pass(void) {
     for (int i = 1; i < K - 1 && !tup(); i++) {
         int a = T[i-1], b = T[i], c2 = T[i+1];
         int d = (i + 2 < K) ? T[i+2] : T[0];
-        int delta = dist(a, c2) + dist(b, d) - dist(a, b) - dist(c2, d);
+        long long delta = dist2(a, c2) + dist2(b, d) - dist2(a, b) - dist2(c2, d);
         if (delta >= 0) continue;
 
         T[i] = c2; T[i+1] = b;
         if (recomp(T, K, E, i)) {
-            TL += delta;
+            int actual_delta = dist(a, c2) + dist(b, d) - dist(a, b) - dist(c2, d);
+            TL += actual_delta;
             TC = E[K-1] + dist(T[K-1], T[0]);
             improved = 1;
         } else {
@@ -379,9 +396,10 @@ static int oropt_pass(void) {
         int c = T[i];
         int prev_i = T[i-1];
         int next_i = (i+1 < K) ? T[i+1] : T[0];
-        int rem_save = dist(prev_i, c) + dist(c, next_i) - dist(prev_i, next_i);
+        long long rem_save = dist2(prev_i, c) + dist2(c, next_i) - dist2(prev_i, next_i);
 
-        int bj = -1, bdelta = 0; /* must be strictly negative to accept */
+        int bj = -1;
+        long long bdelta = 0; /* must be strictly negative to accept */
         int window = 40;
         for (int jj = 1; jj <= K; jj++) {
             /* Skip positions that are same or adjacent to i */
@@ -398,8 +416,8 @@ static int oropt_pass(void) {
                 nj = (jj < K) ? T[jj] : T[0];
             }
 
-            int ins_cost = dist(pj, c) + dist(c, nj) - dist(pj, nj);
-            int delta = ins_cost - rem_save;
+            long long ins_cost = dist2(pj, c) + dist2(c, nj) - dist2(pj, nj);
+            long long delta = ins_cost - rem_save;
             if (delta < bdelta) { bdelta = delta; bj = jj; }
 
             window--;
