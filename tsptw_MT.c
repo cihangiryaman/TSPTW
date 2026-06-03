@@ -60,7 +60,51 @@ static double elapsed(void) {
 #endif
 }
 
-static int tup(void) { return elapsed() >= tlim; }
+/* ===== Per-Thread Solver Context ===== */
+typedef struct {
+    /* Working tour */
+    int *T;
+    int K;
+    int TL, TC;
+    int *E;
+    int *U;
+    /* Thread-local best */
+    int *BT;
+    int BK, BL, BC;
+    /* RNG state */
+    unsigned long long rng_s;
+    /* Scratch buffers (replacing static locals) */
+    int *tmp;
+    int *ne;
+    int *mark;    /* for sel_starts */
+    /* Thread identity */
+    int thread_id;
+    /* Starters assigned to this thread */
+    int *starters;
+    int num_starters;
+    
+    /* Throttling for time checks */
+    int tick;
+    int time_up;
+
+    /* Padding to prevent false sharing (forces struct to span multiple cache lines) */
+    char padding[256];
+} SolverCtx;
+
+
+static int tup(SolverCtx *ctx) {
+    /* Fast path: if we already flagged timeout, return immediately */
+    if (ctx->time_up) return 1;
+    
+    /* Only query the OS clock every 1024 loop iterations */
+    if (++ctx->tick > 1024) {
+        ctx->tick = 0;
+        if (elapsed() >= tlim) {
+            ctx->time_up = 1;
+        }
+    }
+    return ctx->time_up;
+}
 
 /* ===== Distance (Euclidean, rounded) ===== */
 static inline int dist(int a, int b) {
@@ -116,28 +160,7 @@ static void build_grid(void) {
 }
 
 /* ===== Per-Thread Solver Context ===== */
-typedef struct {
-    /* Working tour */
-    int *T;
-    int K;
-    int TL, TC;
-    int *E;
-    int *U;
-    /* Thread-local best */
-    int *BT;
-    int BK, BL, BC;
-    /* RNG state */
-    unsigned long long rng_s;
-    /* Scratch buffers (replacing static locals) */
-    int *tmp;
-    int *ne;
-    int *mark;    /* for sel_starts */
-    /* Thread identity */
-    int thread_id;
-    /* Starters assigned to this thread */
-    int *starters;
-    int num_starters;
-} SolverCtx;
+
 
 static SolverCtx *ctx_alloc(int tid, unsigned long long seed) {
     SolverCtx *ctx = (SolverCtx *)malloc(sizeof(SolverCtx));
@@ -154,6 +177,11 @@ static SolverCtx *ctx_alloc(int tid, unsigned long long seed) {
     ctx->thread_id = tid;
     ctx->starters = NULL;
     ctx->num_starters = 0;
+    
+    /* Initialize new fields */
+    ctx->tick = 0;
+    ctx->time_up = 0;
+    
     return ctx;
 }
 
@@ -378,7 +406,7 @@ static void greedy(SolverCtx *ctx, int start, int mode) {
  */
 static int ins_pass(SolverCtx *ctx) {
     int inserted = 0;
-    for (int c = 0; c < n && !tup(); c++) {
+    for (int c = 0; c < n && !tup(ctx); c++) {
         if (ctx->U[c]) continue;
         int bpos = -1;
         long long bcost = 0x7FFFFFFFFFFFFFFFLL;
@@ -445,7 +473,7 @@ static int two_opt_pass(SolverCtx *ctx) {
     if (range < 1) return 0;
     int offset = rng(ctx, range);
 
-    for (int ii = 0; ii < range && !tup(); ii++) {
+    for (int ii = 0; ii < range && !tup(ctx); ii++) {
         int i = 1 + (ii + offset) % range;
         int jlim = i + maxseg; if (jlim >= ctx->K) jlim = ctx->K - 1;
         for (int j = i + 1; j <= jlim; j++) {
@@ -485,7 +513,7 @@ static int swap_pass(SolverCtx *ctx) {
     if (range < 1) return 0;
     int offset = rng(ctx, range);
 
-    for (int ii = 0; ii < range && !tup(); ii++) {
+    for (int ii = 0; ii < range && !tup(ctx); ii++) {
         int i = 1 + (ii + offset) % range;
         int a = ctx->T[i-1], b = ctx->T[i], c2 = ctx->T[i+1];
         int d = (i + 2 < ctx->K) ? ctx->T[i+2] : ctx->T[0];
@@ -512,7 +540,7 @@ static int swap_pass(SolverCtx *ctx) {
 static int oropt_pass(SolverCtx *ctx) {
     if (ctx->K > 5000) return 0; /* too expensive for large tours */
     int improved = 0;
-    for (int i = 1; i < ctx->K && !tup(); i++) {
+    for (int i = 1; i < ctx->K && !tup(ctx); i++) {
         int c = ctx->T[i];
         int prev_i = ctx->T[i-1];
         int next_i = (i+1 < ctx->K) ? ctx->T[i+1] : ctx->T[0];
@@ -643,16 +671,16 @@ static void *solver_thread(void *arg) {
     /* Each thread uses a different stale threshold for perturbation */
     int stale_limit = 2 + (ctx->thread_id % 3); /* 2, 3, 4, 2 */
 
-    while (!tup()) {
+    while (!tup(ctx)) {
         int pk = ctx->BK, pl = ctx->BL;
 
         ins_pass(ctx);
         ubest(ctx);
 
-        if (!tup()) { two_opt_pass(ctx); ubest(ctx); }
-        if (!tup()) { swap_pass(ctx); ubest(ctx); }
-        if (!tup()) { oropt_pass(ctx); ubest(ctx); }
-        if (!tup()) { ins_pass(ctx); ubest(ctx); }
+        if (!tup(ctx)) { two_opt_pass(ctx); ubest(ctx); }
+        if (!tup(ctx)) { swap_pass(ctx); ubest(ctx); }
+        if (!tup(ctx)) { oropt_pass(ctx); ubest(ctx); }
+        if (!tup(ctx)) { ins_pass(ctx); ubest(ctx); }
 
         if (ctx->BK == pk && ctx->BL == pl) {
             stale++;
