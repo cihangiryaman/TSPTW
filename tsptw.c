@@ -13,7 +13,7 @@
  *
  * Usage: tsptw.exe input.txt output.txt [time_limit_seconds]
  *
- * Compile: gcc -O3 -march=native -flto -o tsptw tsptw.c -lm
+ * Compile: gcc -O3 -march=native -o tsptw tsptw.c -lm
  */
 
 #include <stdio.h>
