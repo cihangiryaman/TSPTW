@@ -127,7 +127,7 @@ static int eval(int *t, int k, int *len, int *comp, int *e) {
 }
 
 /* Recompute arrival times from position 'from'. Returns 1=ok, 0=infeasible */
-static int recomp(int *t, int k, int *e, int from) {
+static int recomp(int *t, int k, int *e, int from, int safe_from) {
     int ct;
     if (from == 0) {
         ct = co[t[0]]; if (ct > cc[t[0]]) return 0;
@@ -139,7 +139,7 @@ static int recomp(int *t, int k, int *e, int from) {
         ct += dist(t[i-1], t[i]);
         int ev = ct > co[t[i]] ? ct : co[t[i]];
         if (ev > cc[t[i]]) return 0;
-        if (ev == e[i]) return 1; /* no change from here on */
+        if (i >= safe_from && ev == e[i]) return 1; /* safe early break */
         e[i] = ev; ct = ev;
     }
     return 1;
@@ -313,12 +313,20 @@ static int ins_pass(void) {
             }
             bcost = cost; bpos = j;
         }
-        if (bpos >= 0) {
-            for (int i = K; i > bpos; i--) T[i] = T[i-1];
+        if (bpos >= 0) 
+        {
+            for (int i = K; i > bpos; i--) {
+                T[i] = T[i-1];
+                E[i] = E[i-1]; /* Fix: Shift E along with T */
+            }
             T[bpos] = c; K++; U[c] = 1;
-            eval(T, K, &TL, &TC, E);
+            /* Incremental update: safe to break after the inserted position */
+            recomp(T, K, E, bpos, bpos + 1);
             inserted++;
         }
+    }
+    if (inserted > 0) {
+        eval(T, K, &TL, &TC, E);
     }
     return inserted;
 }
@@ -344,7 +352,8 @@ static int two_opt_pass(void) {
                 int tmp = T[l]; T[l] = T[r]; T[r] = tmp;
             }
             /* Check TW feasibility from position i */
-            if (recomp(T, K, E, i)) {
+            /* Check TW feasibility from position i. Safe to break after j. */
+            if (recomp(T, K, E, i, j + 1)) {
                 int actual_delta = dist(a, c2) + dist(b, d) - dist(a, b) - dist(c2, d);
                 TL += actual_delta;
                 TC = E[K-1] + dist(T[K-1], T[0]);
@@ -373,7 +382,7 @@ static int swap_pass(void) {
         if (delta >= 0) continue;
 
         T[i] = c2; T[i+1] = b;
-        if (recomp(T, K, E, i)) {
+        if (recomp(T, K, E, i, i + 2)) {
             int actual_delta = dist(a, c2) + dist(b, d) - dist(a, b) - dist(c2, d);
             TL += actual_delta;
             TC = E[K-1] + dist(T[K-1], T[0]);
